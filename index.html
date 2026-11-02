@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>CHAOS REALM: Glitch Runner</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+    background:#050505;
+    overflow:hidden;
+    font-family:'Courier New', monospace; /* Шрифт терминала */
+    color:#fff;
+    touch-action:none;
+    user-select:none;
+}
+canvas{display:block}
+
+/* UI Overlay */
+#ui-layer{
+    position:absolute;top:0;left:0;width:100%;height:100%;
+    pointer-events:none;z-index:10;
+    display:flex;flex-direction:column;justify-content:space-between;
+    padding:20px;
+}
+.top-bar{
+    display:flex;justify-content:space-between;align-items:center;
+    text-shadow:0 0 10px #ff00ff;
+}
+.stat{font-size:20px;font-weight:bold;color:#0ff;letter-spacing:2px}
+.stat span{color:#f0f}
+
+/* Menu */
+.menu-overlay{
+    position:absolute;inset:0;
+    background:rgba(0,0,0,.9);
+    z-index:100;
+    display:flex;flex-direction:column;
+    align-items:center;justify-content:center;
+    transition:opacity .3s;
+}
+.hidden{visibility:hidden;opacity:0;pointer-events:none}
+h1{
+    font-size:min(15vw,80px);
+    color:#fff;
+    text-transform:uppercase;
+    letter-spacing:5px;
+    margin-bottom:10px;
+    /* Эффект глитча через CSS анимацию */
+    animation: glitch-text 2s infinite;
+    position:relative;
+}
+@keyframes glitch-text {
+    0% { transform: translate(0) }
+    20% { transform: translate(-2px, 2px) }
+    40% { transform: translate(-2px, -2px) }
+    60% { transform: translate(2px, 2px) }
+    80% { transform: translate(2px, -2px) }
+    100% { transform: translate(0) }
+}
+p{color:#aaa;margin-bottom:30px;text-align:center;line-height:1.5;max-width:400px}
+.btn{
+    padding:15px 40px;
+    font-size:20px;font-weight:bold;
+    background:transparent;
+    border:2px solid #0ff;
+    color:#0ff;
+    cursor:pointer;
+    text-transform:uppercase;
+    box-shadow:0 0 15px rgba(0,255,255,.3);
+    transition:.2s;
+    pointer-events:auto;
+}
+.btn:hover{background:#0ff;color:#000;box-shadow:0 0 30px #0ff}
+.controls-hint{margin-top:20px;font-size:14px;color:#666}
+</style>
+</head>
+<body>
+
+<canvas id="game"></canvas>
+
+<div id="ui-layer">
+    <div class="top-bar">
+        <div class="stat">SCORE: <span id="scoreVal">0</span></div>
+        <div class="stat">DIST: <span id="distVal">0</span>m</div>
+    </div>
+</div>
+
+<!-- START MENU -->
+<div id="startMenu" class="menu-overlay">
+    <h1>GLITCH<br>RUNNER</h1>
+    <p>Реальность сломана.<br>Беги по платформам, пока они не исчезли.<br>Избегай стен данных.</p>
+    <button class="btn" id="btnStart">START SYSTEM ▶</button>
+    <div class="controls-hint">SPACE / CLICK - Jump | DOUBLE TAP - Double Jump</div>
+</div>
+
+<!-- GAME OVER -->
+<div id="gameOverMenu" class="menu-overlay hidden">
+    <h1 style="color:#f00;animation:none">SYSTEM<br>FAILURE</h1>
+    <p>Final Score: <span id="finalScore" style="color:#0ff;font-size:24px">0</span></p>
+    <button class="btn" id="btnRestart">REBOOT ↺</button>
+</div>
+
+<script>
+// === AUDIO ENGINE (Industrial/Glitch) ===
+let audioCtx = null;
+function initAudio() {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+
+function playGlitchSound(type) {
+    if (!audioCtx) return;
+    const t = audioCtx.currentTime;
+    
+    if (type === 'jump') {
+        // Резкий цифровой звук
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(800, t);
+        osc.frequency.exponentialRampToValueAtTime(100, t + 0.1);
+        gain.gain.setValueAtTime(0.1, t);
+        gain.gain.linearRampToValueAtTime(0, t + 0.1);
+        osc.connect(gain); gain.connect(audioCtx.destination);
+        osc.start(); osc.stop(t + 0.1);
+    } else if (type === 'death') {
+        // Тяжелый бас + шум
+        const bufSize = audioCtx.sampleRate * 0.5;
+        const buf = audioCtx.createBuffer(1, bufSize, audioCtx.sampleRate);
+        const d = buf.getChannelData(0);
+        for(let i=0;i<bufSize;i++) d[i] = (Math.random()*2-1) * Math.pow(1-i/bufSize, 2);
+        const src = audioCtx.createBufferSource(); src.buffer = buf;
+        const f = audioCtx.createBiquadFilter(); f.type='lowpass'; f.frequency.value=400;
+        const g = audioCtx.createGain(); g.gain.value=0.3;
+        src.connect(f); f.connect(g); g.connect(audioCtx.destination);
+        src.start();
+        
+        const osc = audioCtx.createOscillator();
+        const og = audioCtx.createGain();
+        osc.type='sawtooth';
+        osc.frequency.setValueAtTime(100, t);
+        osc.frequency.exponentialRampToValueAtTime(20, t+0.5);
+        og.gain.setValueAtTime(0.2, t);
+        og.gain.linearRampToValueAtTime(0, t+0.5);
+        osc.connect(og); og.connect(audioCtx.destination);
+        osc.start(); osc.stop(t+0.5);
+    } else if (type === 'collect') {
+        // Высокий пик
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(1200, t);
+        osc.frequency.setValueAtTime(1800, t + 0.05);
+        gain.gain.setValueAtTime(0.1, t);
+        gain.gain.linearRampToValueAtTime(0, t + 0.1);
+        osc.connect(gain); gain.connect(audioCtx.destination);
+        osc.start(); osc.stop(t + 0.1);
+    }
+}
+
+// === CANVAS SETUP ===
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+let W, H;
+
+function resize() {
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = W;
+    canvas.height = H;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// === GAME CONSTANTS ===
+const GRAVITY = 0.7;
+const JUMP_FORCE = -13;
+const SPEED_BASE = 6;
+const PLATFORM_GAP_MIN = 100;
+const PLATFORM_GAP_MAX = 200;
+
+// === STATE ===
+let state = {
+    playing: false,
+    rafId: null,
+    score: 0,
+    distance: 0,
+    speed: SPEED_BASE,
+    frame: 0,
+    shake: 0 // Для эффекта тряски экрана
+};
+
+let player = null;
+let platforms = [];
+let obstacles = []; // Стены данных
+let fragments = []; // Бонусы
+let particles = [];
+
+// === CLASSES ===
+
+class Player {
+    constructor() {
+        this.x = W * 0.2;
+        this.y = H / 2;
+        this.w = 30;
+        this.h = 30;
+        this.vy = 0;
+        this.jumpCount = 0;
+        this.maxJumps = 2;
+        this.color = '#0ff';
+        this.trail = [];
+    }
+
+    update() {
+        // Физика
+        this.vy += GRAVITY;
+        this.y += this.vy;
+
+        // Ограничение потолка
+        if (this.y < 0) { this.y = 0; this.vy = 0; }
+
+        // След за игроком
+        this.trail.push({x: this.x, y: this.y, life: 1});
+        if (this.trail.length > 10) this.trail.shift();
+        this.trail.forEach(t => t.life -= 0.1);
+
+        // Проверка падения
+        if (this.y > H) {
+            gameOver();
+        }
+    }
+
+    jump() {
+        if (this.jumpCount < this.maxJumps) {
+            this.vy = JUMP_FORCE;
+            this.jumpCount++;
+            playGlitchSound('jump');
+            
+            // Эффект частиц при прыжке
+            createParticles(this.x + this.w/2, this.y + this.h, '#0ff', 5);
+        }
+    }
+
+    draw() {
+        // Рисуем след
+        ctx.globalAlpha = 0.3;
+        this.trail.forEach(t => {
+            ctx.fillStyle = this.color;
+            ctx.fillRect(t.x, t.y, this.w, this.h);
+        });
+        ctx.globalAlpha = 1;
+
+        // Основной квадрат игрока
+        ctx.shadowBlur = 15;
+        ctx.shadowColor = this.color;
+        ctx.fillStyle = this.color;
+        ctx.fillRect(this.x, this.y, this.w, this.h);
+        
+        // Внутренний детализированный квадрат (эффект робота/аватара)
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(this.x + 8, this.y + 8, this.w - 16, this.h - 16);
+        
+        ctx.shadowBlur = 0;
+    }
+}
+
+class Platform {
+    constructor(x, y, w, h, stable) {
+        this.x = x;
+        this.y = y;
+        this.w = w;
+        this.h = h;
+        this.stable = stable; // true = обычная, false = глитч-исчезающая
+        this.glitchTimer = 0;
+        this.isVisible = true;
+        this.markedForDeletion = false;
+        
+        // Если платформа нестабильна, она начинает мигать сразу
+        if (!stable) {
+            this.glitchInterval = 60 + Math.random() * 60; // Мигает каждые ~1 сек
+        }
+    }
+
+    update(speed) {
+        this.x -= speed;
+        if (this.x + this.w < 0) this.markedForDeletion = true;
+
+        // Логика глитча
+        if (!this.stable) {
+            this.glitchTimer++;
+            if (this.glitchTimer % this.glitchInterval === 0) {
+                this.isVisible = !this.isVisible;
+                // Тряска экрана при появлении/исчезновении крупных блоков
+                if (this.w > 100) state.shake = 5; 
+            }
+        }
+    }
+
+    draw() {
+        if (!this.isVisible && !this.stable) return; // Не рисуем если скрыта
+
+        ctx.save();
+        
+        // Эффект искажения для нестабильных платформ
+        if (!this.stable) {
+            const offset = (Math.random() - 0.5) * 4;
+            ctx.translate(offset, offset);
+            ctx.strokeStyle = '#f0f';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(this.x, this.y, this.w, this.h);
+            ctx.fillStyle = 'rgba(255, 0, 255, 0.1)';
+            ctx.fillRect(this.x, this.y, this.w, this.h);
+        } else {
+            ctx.fillStyle = '#333';
+            ctx.fillRect(this.x, this.y, this.w, this.h);
+            ctx.strokeStyle = '#0ff';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(this.x, this.y, this.w, this.h);
+        }
+        
+        ctx.restore();
+    }
+}
+
+class Obstacle {
+    constructor(x, y, h) {
+        this.x = x;
+        this.y = y;
+        this.w = 20;
+        this.h = h;
+        this.markedForDeletion = false;
+    }
+
+    update(speed) {
+        this.x -= speed;
+        if (this.x + this.w < 0) this.markedForDeletion = true;
+    }
+
+    draw() {
+        ctx.fillStyle = '#f00';
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = '#f00';
+        ctx.fillRect(this.x, this.y, this.w, this.h);
+        ctx.shadowBlur = 0;
+        
+        // Текстура "ошибки"
+        ctx.fillStyle = '#fff';
+        ctx.font = '10px Courier New';
+        ctx.fillText("ERR", this.x + 2, this.y + 15);
+    }
+}
+
+class Fragment {
+    constructor(x, y) {
+        this.x = x;
+        this.y = y;
+        this.size = 10;
+        this.angle = 0;
+        this.markedForDeletion = false;
+    }
+
+    update(speed) {
+        this.x -= speed;
+        this.angle += 0.1;
+        if (this.x + this.size < 0) this.markedForDeletion = true;
+    }
+
+    draw() {
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        ctx.rotate(this.angle);
+        ctx.fillStyle = '#ffd700';
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = '#ffd700';
+        ctx.beginPath();
+        ctx.moveTo(0, -this.size);
+        ctx.lineTo(this.size, 0);
+        ctx.lineTo(0, this.size);
+        ctx.lineTo(-this.size, 0);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+    }
+}
+
+class Particle {
+    constructor(x, y, color) {
+        this.x = x;
+        this.y = y;
+        this.vx = (Math.random() - 0.5) * 4;
+        this.vy = (Math.random() - 0.5) * 4;
+        this.life = 1;
+        this.color = color;
+        this.size = Math.random() * 3 + 1;
+    }
+    update() {
+        this.x += this.vx;
+        this.y += this.vy;
+        this.life -= 0.05;
+    }
+    draw(ctx) {
+        ctx.globalAlpha = this.life;
+        ctx.fillStyle = this.color;
+        ctx.fillRect(this.x, this.y, this.size, this.size);
+        ctx.globalAlpha = 1;
+    }
+}
+
+function createParticles(x, y, color, count) {
+    for(let i=0; i<count; i++) particles.push(new Particle(x, y, color));
+}
+
+// === WORLD GENERATION ===
+
+function generateWorld() {
+    const lastPlat = platforms[platforms.length - 1];
+    const startX = lastPlat ? lastPlat.x + lastPlat.w : W;
+    
+    // Расстояние до следующей платформы
+    const gap = PLATFORM_GAP_MIN + Math.random() * (PLATFORM_GAP_MAX - PLATFORM_GAP_MIN);
+    const newX = startX + gap;
+    
+    // Высота следующей платформы
+    let newY = lastPlat ? lastPlat.y : H * 0.6;
+    // Случайное изменение высоты, но в пределах экрана
+    newY += (Math.random() - 0.5) * 150;
+    newY = Math.max(H * 0.3, Math.min(H * 0.8, newY));
+
+    const width = 80 + Math.random() * 100;
+    const isStable = Math.random() > 0.3; // 30% шанс глитч-платформы
+    
+    platforms.push(new Platform(newX, newY, width, 20, isStable));
+
+    // Шанс появления препятствия НА платформе или между ними
+    if (Math.random() < 0.2 && platforms.length > 2) {
+        // Препятствие над платформой
+        const obsHeight = 40 + Math.random() * 60;
+        obstacles.push(new Obstacle(newX + width/2 - 10, newY - obsHeight, obsHeight));
+    }
+
+    // Шанс появления бонуса в воздухе
+    if (Math.random() < 0.15) {
+        const fragY = newY - 100 - Math.random() * 100;
+        fragments.push(new Fragment(newX + width/2, fragY));
+    }
+}
+
+// === COLLISIONS ===
+
+function checkCollisions() {
+    // Игрок vs Платформы
+    let grounded = false;
+    
+    for (const plat of platforms) {
+        if (!plat.isVisible && !plat.stable) continue; // Проходим сквозь невидимые
+
+        // AABB проверка
+        if (player.x < plat.x + plat.w &&
+            player.x + player.w > plat.x &&
+            player.y + player.h > plat.y &&
+            player.y + player.h < plat.y + plat.h + player.vy + 5 && // Только сверху
+            player.vy >= 0) {
+            
+            player.y = plat.y - player.h;
+            player.vy = 0;
+            player.jumpCount = 0;
+            grounded = true;
+        }
+    }
+
+    if (!grounded && player.jumpCount > 0) {
+         // Мы в воздухе, ничего не делаем специально, гравитация работает
+    }
+
+    // Игрок vs Препятствия
+    for (const obs of obstacles) {
+        if (player.x < obs.x + obs.w &&
+            player.x + player.w > obs.x &&
+            player.y < obs.y + obs.h &&
+            player.y + player.h > obs.y) {
+            gameOver();
+        }
+    }
+
+    // Игрок vs Бонусы
+    for (let i = fragments.length - 1; i >= 0; i--) {
+        const f = fragments[i];
+        const dx = (player.x + player.w/2) - f.x;
+        const dy = (player.y + player.h/2) - f.y;
+        const dist = Math.sqrt(dx*dx + dy*dy);
+        
+        if (dist < player.w/2 + f.size) {
+            state.score += 50;
+            playGlitchSound('collect');
+            createParticles(f.x, f.y, '#ffd700', 8);
+            fragments.splice(i, 1);
+            updateUI();
+        }
+    }
+}
+
+// === MAIN LOOP ===
+
+function startGameLogic() {
+    initAudio();
+    document.getElementById('startMenu').classList.add('hidden');
+    document.getElementById('gameOverMenu').classList.add('hidden');
+
+    // Reset State
+    state.playing = true;
+    state.score = 0;
+    state.distance = 0;
+    state.speed = SPEED_BASE;
+    state.frame = 0;
+    state.shake = 0;
+
+    // Reset Entities
+    player = new Player();
+    platforms = [new Platform(W*0.1, H*0.6, 200, 20, true)]; // Стартовая безопасная зона
+    obstacles = [];
+    fragments = [];
+    particles = [];
+
+    updateUI();
+
+    if (state.rafId) cancelAnimationFrame(state.rafId);
+    loop();
+}
+
+function gameOver() {
+    state.playing = false;
+    playGlitchSound('death');
+    state.shake = 20; // Сильная тряска при смерти
+    document.getElementById('finalScore').innerText = state.score;
+    setTimeout(() => {
+        document.getElementById('gameOverMenu').classList.remove('hidden');
+    }, 500);
+}
+
+function updateUI() {
+    document.getElementById('scoreVal').innerText = state.score;
+    document.getElementById('distVal').innerText = Math.floor(state.distance);
+}
+
+function loop() {
+    if (!state.playing) {
+        // Даже после остановки продолжаем рисовать затухающие частицы и тряску
+        render();
+        if (particles.length > 0 || state.shake > 0) requestAnimationFrame(loop);
+        return;
+    }
+
+    state.frame++;
+    state.distance += state.speed / 10;
+    
+    // Увеличение сложности
+    if (state.frame % 600 === 0) {
+        state.speed += 0.5;
+    }
+
+    // Генерация мира
+    if (platforms[platforms.length-1].x < W) {
+        generateWorld();
+    }
+
+    // Обновление сущностей
+    player.update();
+    
+    platforms.forEach(p => p.update(state.speed));
+    platforms = platforms.filter(p => !p.markedForDeletion);
+
+    obstacles.forEach(o => o.update(state.speed));
+    obstacles = obstacles.filter(o => !o.markedForDeletion);
+
+    fragments.forEach(f => f.update(state.speed));
+    fragments = fragments.filter(f => !f.markedForDeletion);
+
+    particles.forEach(p => p.update());
+    particles = particles.filter(p => p.life > 0);
+
+    checkCollisions();
+    updateUI();
+
+    render();
+
+    state.rafId = requestAnimationFrame(loop);
+}
+
+// === RENDERING WITH EFFECTS ===
+
+function render() {
+    // 1. Очистка фона (черный)
+    ctx.fillStyle = '#050505';
+    ctx.fillRect(0, 0, W, H);
+
+    // 2. Применение Screen Shake
+    ctx.save();
+    if (state.shake > 0) {
+        const dx = (Math.random() - 0.5) * state.shake;
+        const dy = (Math.random() - 0.5) * state.shake;
+        ctx.translate(dx, dy);
+        state.shake *= 0.9; // Затухание тряски
+        if (state.shake < 0.5) state.shake = 0;
+    }
+
+    // 3. Рисование сетки фона (для ощущения глубины)
+    ctx.strokeStyle = 'rgba(0, 255, 255, 0.05)';
+    ctx.lineWidth = 1;
+    const gridSize = 50;
+    const offsetX = -(state.distance * 2) % gridSize;
+    for(let x = offsetX; x < W; x += gridSize) {
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+    }
+    for(let y = 0; y < H; y += gridSize) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+    }
+
+    // 4. Рисование объектов
+    platforms.forEach(p => p.draw());
+    obstacles.forEach(o => o.draw());
+    fragments.forEach(f => f.draw());
+    player.draw();
+    particles.forEach(p => p.draw(ctx));
+
+    ctx.restore(); // Конец тряски
+
+    // 5. Пост-эффекты (Scanlines & Chromatic Aberration simulation)
+    // Scanlines
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.1)';
+    for(let y = 0; y < H; y += 4) {
+        ctx.fillRect(0, y, W, 1);
+    }
+
+    // Random Glitch Block (если очень далеко убежал)
+    if (Math.random() < 0.01 && state.playing) {
+        const gh = Math.random() * 50 + 10;
+        const gy = Math.random() * H;
+        ctx.fillStyle = `rgba(${Math.random()*255}, ${Math.random()*255}, ${Math.random()*255}, 0.5)`;
+        ctx.fillRect(Math.random() * W, gy, Math.random() * 200, gh);
+    }
+}
+
+// === INPUT HANDLING ===
+
+function handleInput(e) {
+    if (!state.playing) return;
+    if (e.type === 'keydown' && e.code !== 'Space') return;
+    if (e.type === 'touchstart') e.preventDefault();
+    
+    player.jump();
+}
+
+window.addEventListener('keydown', handleInput);
+canvas.addEventListener('mousedown', handleInput);
+canvas.addEventListener('touchstart', handleInput, {passive:false});
+
+document.getElementById('btnStart').addEventListener('click', () => {
+    document.getElementById('btnStart').blur();
+    startGameLogic();
+});
+
+document.getElementById('btnRestart').addEventListener('click', () => {
+    document.getElementById('btnRestart').blur();
+    startGameLogic();
+});
+
+// Initial Draw
+render();
+
+</script>
+</body>
+</html>
